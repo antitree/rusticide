@@ -1,0 +1,26 @@
+name: Rusticide (example)
+
+on:
+  schedule:
+    # Daily. Rusticide re-sums the trailing window itself; this just decides
+    # how often you check.
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  rusticide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: antitree/rusticide@main
+        with:
+          ecosystem: npm
+          package: your-package-name
+          threshold-mode: cvss-sum
+          threshold-value: '30'
+          window-months: '6'
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          push-token: ${{ secrets.RUSTICIDE_PUSH_TOKEN }}

@@ -1,0 +1,98 @@
+name: 'Rusticide'
+description: >-
+  Watches a repo's own first-party GHSA advisories. Once the trailing 6-month
+  CVSS sum (or advisory count) crosses a threshold, runs a single one-shot
+  Claude Code session that rewrites the repo in Rust (or Erlang, if it's
+  already Rust) and force-pushes the result directly to main. No PR, no
+  review, no second chances. This fires at most once per repo, ever.
+author: 'antitree'
+branding:
+  icon: 'alert-triangle'
+  color: 'red'
+
+inputs:
+  ecosystem:
+    description: >-
+      The GHSA/OSV ecosystem your package is published under (e.g. npm, pip,
+      cargo, maven, gem, composer, nuget, go). Required — there is no
+      "advisories for my repo" API, only "advisories for this ecosystem +
+      package name", so you must tell us what to look up.
+    required: true
+  package:
+    description: >-
+      The exact package name as published to that ecosystem (e.g. the "name"
+      field in package.json, the PyPI project name, the crates.io crate name).
+    required: true
+  threshold-mode:
+    description: 'Either "cvss-sum" or "count".'
+    required: false
+    default: 'cvss-sum'
+  threshold-value:
+    description: 'Numeric threshold. Default 30 for cvss-sum mode.'
+    required: false
+    default: '30'
+  window-months:
+    description: 'Trailing window size in months for aggregating advisories.'
+    required: false
+    default: '6'
+  anthropic-api-key:
+    description: 'Anthropic API key used to run the one-shot Claude Code rewrite session.'
+    required: true
+  push-token:
+    description: >-
+      A GitHub PAT or App token with contents:write (and branch-protection
+      bypass on main, if main is protected). The default GITHUB_TOKEN cannot
+      force-push to a protected branch; this action does not attempt to
+      modify branch protection itself. Disable protection on main or grant
+      this token's identity explicit bypass before relying on this action.
+    required: true
+  marker-path:
+    description: 'Path to the marker file that permanently disables future rewrites once one has happened.'
+    required: false
+    default: '.rusticide-done'
+
+outputs:
+  triggered:
+    description: '"true" if the threshold was crossed and a rewrite was attempted this run.'
+  cvss-sum:
+    description: 'The computed CVSS sum (or count) for the trailing window, as a string.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check already rewritten
+      id: marker
+      shell: bash
+      run: python3 "${{ github.action_path }}/scripts/already_rewritten.py" "${{ inputs.marker-path }}"
+
+    - name: Check advisory threshold
+      id: threshold
+      if: steps.marker.outputs.done != 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python3 "${{ github.action_path }}/scripts/check_threshold.py" \
+          --ecosystem "${{ inputs.ecosystem }}" \
+          --package "${{ inputs.package }}" \
+          --mode "${{ inputs.threshold-mode }}" \
+          --threshold "${{ inputs.threshold-value }}" \
+          --window-months "${{ inputs.window-months }}"
+
+    - name: Run one-shot rewrite
+      id: rewrite
+      if: steps.marker.outputs.done != 'true' && steps.threshold.outputs.triggered == 'true'
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        python3 "${{ github.action_path }}/scripts/run_rewrite.py" \
+          --marker-path "${{ inputs.marker-path }}"
+
+    - name: Force-push to main
+      if: steps.marker.outputs.done != 'true' && steps.threshold.outputs.triggered == 'true'
+      shell: bash
+      env:
+        PUSH_TOKEN: ${{ inputs.push-token }}
+      run: |
+        bash "${{ github.action_path }}/scripts/push_to_main.sh"
